@@ -30,9 +30,7 @@ target_link_libraries(${PROJECT_NAME}
     tinyusb_board
 )
 
-pico_generate_pio_header(${PROJECT_NAME}
-    ${CMAKE_CURRENT_LIST_DIR}/pio/ejtag.pio
-    ${CMAKE_CURRENT_LIST_DIR}/pio/ws2812.pio
-)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/ejtag.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/ws2812.pio)
 
 pico_add_extra_outputs(${PROJECT_NAME})
