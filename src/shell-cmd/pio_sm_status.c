@@ -1,23 +1,24 @@
 
 #include "shell_port.h"
+#include "config.h"
 #include "ejtag.h"
 #include <hardware/pio.h>
 #include <stdio.h>
 
 int pio_sm_status(int argc, char **argv) {
     shellPrint(&shell, " SM0 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-               pio_sm_get_pc(pio0, 0),
-               pio_sm_get_tx_fifo_level(pio0, 0),
-               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << 0)) != 0);
+               pio_sm_get_pc(pio0, SM_TDI),
+               pio_sm_get_tx_fifo_level(pio0, SM_TDI),
+               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
     shellPrint(&shell, " SM1 TMS PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-               pio_sm_get_pc(pio0, 1),
-               pio_sm_get_tx_fifo_level(pio0, 1),
-               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << 1)) != 0);
+               pio_sm_get_pc(pio0, SM_TMS),
+               pio_sm_get_tx_fifo_level(pio0, SM_TMS),
+               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TMS)) != 0);
     shellPrint(&shell, " SM2 TDO PC=%02d [FIFO TX=%d RX=%d STALL=%d]\r\n",
-               pio_sm_get_pc(pio0, 2),
-               pio_sm_get_tx_fifo_level(pio0, 2),
-               pio_sm_get_rx_fifo_level(pio0, 2),
-               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << 2)) != 0);
+               pio_sm_get_pc(pio0, SM_TDO),
+               pio_sm_get_tx_fifo_level(pio0, SM_TDO),
+               pio_sm_get_rx_fifo_level(pio0, SM_TDO),
+               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDO)) != 0);
     return 0;
 }
 SHELL_EXPORT_CMD(SHELL_CMD_TYPE(SHELL_TYPE_CMD_MAIN), piostatus, pio_sm_status, PIO State machine status);

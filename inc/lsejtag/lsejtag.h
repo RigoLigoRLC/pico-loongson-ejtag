@@ -131,12 +131,13 @@ typedef struct {
     // Depending on how many bytes of a command is available at first, the cmd_buf_state will be
     // changed so that proper read strategy can be decided when next packet was received.
     uint32_t buffered_length;
-    uint8_t buffered_cmd[256];
+    uint8_t buffered_cmd[256];  // Keep this field 32-bit aligned pls :(
     uint32_t cmd_buf_wait_payload_size;
     lsejtag_cmd_buf_state cmd_buf_state;
 
     // Configurable parameters. These are mostly accessed by `usblooptest` commands by "writing
-    // directly into probe memory space".
+    // directly into probe memory space", used by fast_mem_read/write ops.
+    // Nobody would ever use an IR wider than 8 bits, right? Right????
     uint8_t param_ir_len_bits;
     uint8_t param_ir_skip;
     uint8_t param_ir_control;
@@ -154,9 +155,16 @@ typedef struct {
     // partially executed state, and continue later on when more data can be received/sent.
     bool continuation;  // Valid flag
     uint8_t cont_op;    // Which op was this continuation context created for
-    uint32_t dword_left;// How many DWORDs to read/write before command finishes.
-                        // For fast_writes: how many DWORDs of payload need to be received from host
-                        // For fast_reads: how many DWORDs of RAM need to be read from target (and
+    bool is_64bit_cpu;  // Is target CPU 64 bit (affects Address/Data register length)
+    bool use_fastdata;  // Is FASTDATA instruction used
+    uint16_t core_count;        // Target core count (decides IR sequence length)
+    uint16_t target_core;       // Target core (starting from 0)
+    uint32_t bits_per_xfer;     // How many bits of TDI/TMS data is needed for one USize R/W xfer
+    uint32_t xfers_per_bufblk;  // How many USize R/Ws fits into one JTAG buffer block
+    uint32_t tdi_bitlen;// TDI/TMS bit length of the whole premade TDI/TMS sequence
+    uint32_t xfers_left;// How many xfers to read/write before command finishes.
+                        // For fast_writes: how many xfers of payload need to be received from host
+                        // For fast_reads: how many xfers of RAM need to be read from target (and
                         // encapsulated in the format that host understands and sent)
     
     struct lsejtag_jtagbuf_blk {

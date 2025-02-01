@@ -28,5 +28,19 @@
 
 #define WS2812_PIN                      16
 
+// PIO allocation
+#define SM_TDI                                  0
+#define SM_TMS                                  1
+#define SM_TDO                                  2
+#define SM_WS2812                               3
+
+#define SM_MASK_TDI_TMS                         ((1<<(SM_TDI))|(1<<(SM_TMS)))
+#define SM_MASK_JTAG                            (SM_MASK_TDI_TMS|(1<<(SM_TDO)))
+
+// PIO program location
+#define SM_PC_TDI                               0
+#define SM_PC_TMS                               8
+#define SM_PC_TDO                               16
+#define SM_PC_WS2812                            28
 
 

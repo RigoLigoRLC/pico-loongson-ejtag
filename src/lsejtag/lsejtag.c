@@ -26,6 +26,14 @@ void lsejtag_init_ctx(lsejtag_ctx *ctx) {
     memset(ctx, 0, sizeof(lsejtag_ctx));
     ctx->tdo_dma_ptr = ctx->tdo_in_data;
     ctx->tdo_flush_ptr = ctx->tdo_in_data;
+
+    // Default IR params
+    ctx->param_ir_len_bits = 4;
+    ctx->param_ir_skip = 0;
+    ctx->param_ir_control = 5;
+    ctx->param_ir_data = 4;
+    ctx->param_ir_address = 3;
+    ctx->param_ir_fastdata = 8;
 }
 
 lsejtag_dispatch_result lsejtag_dispatch(lsejtag_ctx *ctx) {
@@ -123,7 +131,7 @@ wait_cfg:
             // header(u16) + clkdiv(u16) + len(u32) + cpucore(u16)
             const uint32_t expect_len = header->fast_target_mem_write.chained_core_count == 0 ?
                                         8 : 10; // When chained core count is 0, cpucore is gone
-            
+
             if (len_avail > expect_len) {
                 const uint32_t consume_len = expect_len - ctx->buffered_length;
 
@@ -131,10 +139,12 @@ wait_cfg:
                                            consume_len);
                 len_rx -= consume_len;
                 ctx->buffered_length += consume_len;
-                ctx->cmd_buf_wait_payload_size = cmd->fast_mem_read_at_core.data_len_dword_count *
-                                                 4;
-                ctx->cmd_buf_state = cbs_wait_payload;
-                goto wait_payload;
+                // ctx->cmd_buf_wait_payload_size = cmd->fast_mem_read_at_core.data_len_dword_count *
+                //                                  4;
+                // ctx->cmd_buf_state = cbs_wait_payload;
+                // goto wait_payload;
+                ctx->cmd_buf_state = cbs_execute;
+                return dpr_execute;
             }
             break;
         }
@@ -212,9 +222,9 @@ lsejtag_cmd_exec_result lsejtag_execute(lsejtag_ctx *ctx) {
         case op_loopback_test:
             break;
         case op_fast_target_mem_write_fastdata:
-            break;
+            return cmdimpl_fast_mem_write(ctx, true);
         case op_fast_target_mem_write:
-            break;
+            return cmdimpl_fast_mem_write(ctx, false);
         case op_fast_target_mem_read_fastdata:
             break;
         case op_fast_target_mem_read:
@@ -227,12 +237,18 @@ lsejtag_cmd_exec_result lsejtag_execute(lsejtag_ctx *ctx) {
 }
 
 static inline lsejtag_cmd_exec_result lsejtag_execute_continuation(lsejtag_ctx *ctx) {
-    if (!is_continuation_capable_op(ctx->cont_op)) {
+    switch ((lsejtag_cmd_op)ctx->cont_op) {
+
+    case op_fast_target_mem_write_fastdata:
+    case op_fast_target_mem_write:
+        return cmdimpl_continue_fast_mem_write(ctx);
+    case op_fast_target_mem_read_fastdata:
+    case op_fast_target_mem_read:
+        // break; // TODO:
+
+    default:
         return cer_bad_continue;
     }
-
-    // TODO:
-    return cer_bad_continue;
 }
 
 uint32_t lsejtag_flush_tdo(lsejtag_ctx *ctx) {

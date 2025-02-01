@@ -31,9 +31,7 @@ int main() {
     init_hardware();
     init_software();
     init_reset_tap_via_tms();
-    init_print_clock();
-
-    // testdma();
+    // init_print_clock();
 
     while (1) {
         tud_task();
@@ -79,6 +77,10 @@ static inline uint32_t ws2812_rgb_u32(uint8_t r, uint8_t g, uint8_t b) {
             ((uint32_t) (r) << 8) |
             ((uint32_t) (g) << 16) |
             (uint32_t) (b);
+}
+
+void isr_hardfault() {
+
 }
 
 //==============================================================================
@@ -139,16 +141,16 @@ void init_pio() {
     static const char panic_text[] = "%s PIO SM allocation failed. This should not happen.";
 
     // TDI/TMS SM program
-    if (pio_add_program_at_offset(pio0, &ejtag_tdi_program, 0) < 0) {
+    if (pio_add_program_at_offset(pio0, &ejtag_tdi_program, SM_PC_TDI) < 0) {
         panic(panic_text, "TDI");
     }
-    if (pio_add_program_at_offset(pio0, &ejtag_tdi_program, 8) < 0) {
+    if (pio_add_program_at_offset(pio0, &ejtag_tms_program, SM_PC_TMS) < 0) {
         panic(panic_text, "TMS");
     }
-    if (pio_add_program_at_offset(pio0, &ejtag_tdo_program, 16) < 0) {
+    if (pio_add_program_at_offset(pio0, &ejtag_tdo_program, SM_PC_TDO) < 0) {
         panic(panic_text, "TDO");
     }
-    if (pio_add_program_at_offset(pio0, &ws2812_program, 28) < 0) {
+    if (pio_add_program_at_offset(pio0, &ws2812_program, SM_PC_WS2812) < 0) {
         panic(panic_text, "WS2812");
     }
 
@@ -157,47 +159,51 @@ void init_pio() {
     pio_gpio_init(pio0, EJTAG_PIN_TDO);
     pio_gpio_init(pio0, EJTAG_PIN_TCK);
     pio_gpio_init(pio0, EJTAG_PIN_TMS);
+    pio_gpio_init(pio0, EJTAG_PIN_BRST); // TODO:REMOVE
     pio_gpio_init(pio0, EJTAG_PIN_TDO_SAMPLE_TIME);
 
-    // TDI SM (PIO0, SM0) config
-    pio_sm_set_consecutive_pindirs(pio0, 0, EJTAG_PIN_TDI, 1, true);
-    pio_sm_set_consecutive_pindirs(pio0, 0, EJTAG_PIN_TCK, 1, true);
+    // TDI SM config
+    pio_sm_set_consecutive_pindirs(pio0, SM_TDI, EJTAG_PIN_TDI, 1, true);
+    pio_sm_set_consecutive_pindirs(pio0, SM_TDI, EJTAG_PIN_TCK, 1, true);
+    pio_sm_set_consecutive_pindirs(pio0, SM_TDI, EJTAG_PIN_BRST, 1, true);
     sm_config_set_fifo_join(&smcfg, PIO_FIFO_JOIN_TX);
     sm_config_set_out_pins(&smcfg, EJTAG_PIN_TDI, 1);
     sm_config_set_out_shift(&smcfg, true, false, 0);
-    sm_config_set_sideset_pins(&smcfg, EJTAG_PIN_TCK);
-    sm_config_set_sideset(&smcfg, 1, false, false);
-    sm_config_set_wrap(&smcfg, ejtag_tdi_wrap_target, ejtag_tdi_wrap);
+    sm_config_set_sideset_pins(&smcfg, EJTAG_PIN_BRST); // TODO:REMOVE
+    sm_config_set_sideset(&smcfg, 1, false, false); // TODO:REMOVE
+    sm_config_set_wrap(&smcfg, ejtag_tdi_wrap_target + SM_PC_TDI, ejtag_tdi_wrap + SM_PC_TDI);
     sm_config_set_clkdiv(&smcfg, 6.f);
-    pio_sm_init(pio0, 0, 0, &smcfg);
-    ejtag_ctx.tdi_write_addr = &pio0->txf[0];
+    pio_sm_init(pio0, SM_TDI, SM_PC_TDI, &smcfg);
+    ejtag_ctx.tdi_write_addr = &pio0->txf[SM_TDI];
 
     // TDI SM IRQ (IRQ bit 0, this is for TDI&TMS completion handler since they are in sync)
     irq_set_exclusive_handler(PIO0_IRQ_0, isr_pio0_irq0);
     pio_set_irq0_source_enabled(pio0, pis_interrupt0, true);
     irq_set_enabled(PIO0_IRQ_0, true);
 
-    // TMS SM (PIO0, SM1) config
-    pio_sm_set_consecutive_pindirs(pio0, 1, EJTAG_PIN_TMS, 1, true);
+    // TMS SM config
+    pio_sm_set_consecutive_pindirs(pio0, SM_TMS, EJTAG_PIN_TMS, 1, true);
     sm_config_set_out_pins(&smcfg, EJTAG_PIN_TMS, 1);
-    sm_config_set_wrap(&smcfg, ejtag_tms_wrap_target + 8, ejtag_tms_wrap + 8);
-    pio_sm_init(pio0, 1, 8, &smcfg);
-    ejtag_ctx.tms_write_addr = &pio0->txf[1];
+    sm_config_set_sideset_pins(&smcfg, EJTAG_PIN_TCK);
+    sm_config_set_sideset(&smcfg, 1, false, false);
+    sm_config_set_wrap(&smcfg, ejtag_tms_wrap_target + SM_PC_TMS, ejtag_tms_wrap + SM_PC_TMS);
+    pio_sm_init(pio0, SM_TMS, SM_PC_TMS, &smcfg);
+    ejtag_ctx.tms_write_addr = &pio0->txf[SM_TMS];
 
     // TDO SM (PIO0, SM2) config
-    pio_sm_set_consecutive_pindirs(pio0, 2, EJTAG_PIN_TDO, 1, false);
-    pio_sm_set_consecutive_pindirs(pio0, 2, EJTAG_PIN_TDO_SAMPLE_TIME, 1, true);
+    pio_sm_set_consecutive_pindirs(pio0, SM_TDO, EJTAG_PIN_TDO, 1, false);
+    pio_sm_set_consecutive_pindirs(pio0, SM_TDO, EJTAG_PIN_TDO_SAMPLE_TIME, 1, true);
     sm_config_set_fifo_join(&smcfg, PIO_FIFO_JOIN_NONE);
     sm_config_set_sideset_pins(&smcfg, EJTAG_PIN_TDO_SAMPLE_TIME);
     sm_config_set_in_pins(&smcfg, EJTAG_PIN_TDO);
-    sm_config_set_wrap(&smcfg, ejtag_tdo_wrap_target + 16, ejtag_tdo_wrap + 16);
-    pio_sm_init(pio0, 2, 16, &smcfg);
-    ejtag_ctx.tdo_write_addr = &pio0->txf[2];
-    ejtag_ctx.tdo_read_addr = &pio0->rxf[2];
+    sm_config_set_wrap(&smcfg, ejtag_tdo_wrap_target + SM_PC_TDO, ejtag_tdo_wrap + SM_PC_TDO);
+    pio_sm_init(pio0, SM_TDO, SM_PC_TDO, &smcfg);
+    ejtag_ctx.tdo_write_addr = &pio0->txf[SM_TDO];
+    ejtag_ctx.tdo_read_addr = &pio0->rxf[SM_TDO];
 
     // WS2812 SM (PIO0, SM3) config
-    ws2812_program_init(pio0, 3, 28, WS2812_PIN, 800000, false);
-    ejtag_ctx.ws2812_write_addr = &pio0->txf[3];
+    ws2812_program_init(pio0, SM_WS2812, SM_PC_WS2812, WS2812_PIN, 800000, false);
+    ejtag_ctx.ws2812_write_addr = &pio0->txf[SM_WS2812];
 }
 
 void init_dma() {
@@ -208,18 +214,18 @@ void init_dma() {
     channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
     channel_config_set_read_increment(&cfg, true);
     channel_config_set_write_increment(&cfg, false);
-    channel_config_set_dreq(&cfg, DREQ_PIO0_TX0);
+    channel_config_set_dreq(&cfg, DREQ_PIO0_TX0 + SM_TDI);
     // channel_config_set_irq_quiet(&cfg, true);
     dma_channel_configure(ejtag_ctx.tdi_chan, &cfg, ejtag_ctx.tdi_write_addr, NULL, 0, false);
 
     ejtag_ctx.tms_chan = dma_claim_unused_channel(true);
-    channel_config_set_dreq(&cfg, DREQ_PIO0_TX1);
+    channel_config_set_dreq(&cfg, DREQ_PIO0_TX0 + SM_TMS);
     dma_channel_configure(ejtag_ctx.tms_chan, &cfg, ejtag_ctx.tms_write_addr, NULL, 0, false);
 
     ejtag_ctx.tdo_chan = dma_claim_unused_channel(true);
     channel_config_set_read_increment(&cfg, false);
     channel_config_set_write_increment(&cfg, true);
-    channel_config_set_dreq(&cfg, DREQ_PIO0_RX2);
+    channel_config_set_dreq(&cfg, DREQ_PIO0_RX0 + SM_TDO);
     dma_channel_configure(ejtag_ctx.tdo_chan, &cfg, NULL, ejtag_ctx.tdo_read_addr, 0, false);
 
     ejtag_ctx.dma_start_mask_no_tdo = (1 << ejtag_ctx.tdi_chan) | (1 << ejtag_ctx.tms_chan);
@@ -264,9 +270,9 @@ void init_software() {
 void init_reset_tap_via_tms() {
     *ejtag_ctx.tms_write_addr = 31;
     *ejtag_ctx.tms_write_addr = 0x0FFFFFFF;
-    pio_set_sm_mask_enabled(pio0, 0x2, true);
+    pio_set_sm_mask_enabled(pio0, SM_MASK_TDI_TMS, true);
     sleep_ms(5); // This is more than enough!
-    pio_set_sm_mask_enabled(pio0, 0x7, false);
+    pio_set_sm_mask_enabled(pio0, SM_MASK_JTAG, false);
 }
 
 void init_print_clock() {

@@ -1,6 +1,8 @@
 
+#include <pico/platform/compiler.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 #include "lsejtag/config.h"
 #include "lsejtag/cmdimpl.h"
 #include "lsejtag/lsejtag_impl.h"
@@ -161,7 +163,7 @@ lsejtag_cmd_exec_result cmdimpl_io_manip(lsejtag_ctx *ctx) {
         break;
 
     case io_oe:
-        // When #OE is pulled low, all input/output are cut off. UNIMPLEMENTED
+        // When #OE is pulled high, all input/output are cut off. TODO: UNIMPLEMENTED
         break;
 
     case io_tap_reset: {
@@ -272,4 +274,394 @@ lsejtag_cmd_exec_result cmdimpl_irdr_write(lsejtag_ctx *ctx, bool isir) {
 
     cmd_buf_clean(ctx);
     return cer_success;
+}
+
+static inline uint8_t append_bits(uint32_t *dest_buf, uint32_t bitshift, uint32_t field,
+                                  uint8_t bits) {
+    const uint32_t dwordshift = bitshift / 32, local_bitshift = bitshift % 32;
+    const uint32_t split_field_thresh = 32 - bits;
+    const uint32_t field_masked = field & ~(0xFFFFFFFFu << bits);
+
+    if (local_bitshift < split_field_thresh) {
+        dest_buf[dwordshift] |= (field_masked << local_bitshift);
+    } else {
+        dest_buf[dwordshift] |= (field_masked << local_bitshift);
+        dest_buf[dwordshift + 1] |= (field_masked >> (32 - local_bitshift));
+    }
+    return bits;
+}
+
+static inline uint8_t append_dword(uint32_t *dest_buf, uint32_t bitshift, uint32_t field) {
+    const uint32_t dwordshift = bitshift / 32, local_bitshift = bitshift % 32;
+
+    if (local_bitshift == 0) {
+        dest_buf[dwordshift] = field;
+    } else {
+        dest_buf[dwordshift] |= (field << local_bitshift);
+        dest_buf[dwordshift + 1] |= (field >> (32 - local_bitshift));
+    }
+    return 32;
+}
+
+static inline uint8_t replace_dword(uint32_t *dest_buf, uint32_t bitshift, uint32_t field) {
+    const uint32_t dwordshift = bitshift / 32, local_bitshift = bitshift % 32;
+
+    if (local_bitshift == 0) {
+        dest_buf[dwordshift] = field;
+    } else {
+        uint32_t tmp;
+        tmp = dest_buf[dwordshift] & ~(0xFFFFFFFFu << local_bitshift);
+        tmp |= (field << local_bitshift);
+        dest_buf[dwordshift] = tmp;
+
+        tmp = dest_buf[dwordshift + 1] & ~(0xFFFFFFFFu >> (32 - local_bitshift));
+        tmp |= (field >> (32 - local_bitshift));
+        dest_buf[dwordshift + 1] = tmp;
+    }
+    return 32;
+}
+
+lsejtag_cmd_exec_result cmdimpl_fast_mem_write(lsejtag_ctx *ctx, bool use_fastdata) {
+    lsejtag_cmd *cmd = (lsejtag_cmd *)ctx->buffered_cmd;
+    uint32_t bits_per_xfer;
+    uint32_t dwords_per_xfer;
+    uint32_t bits_in_tditms_buf = sizeof(ctx->jtagbuf_a.tdi_data) * 8;
+    struct lsejtag_jtagbuf_blk *bufblk = &ctx->jtagbuf_a;
+    uint32_t *tms_data = bufblk->tms_data, *tdi_data = bufblk->tdi_data;
+    uint32_t bitshift = 0;
+    uint32_t core_count; // Real core count; when ctx->core_count == 0 it means 1
+    uint32_t skipbits;
+
+    ctx->cont_op = cmd->common.header.op;
+    ctx->is_64bit_cpu = cmd->fast_mem_write.header.cpu_is_64bit;
+    ctx->use_fastdata = use_fastdata;
+    ctx->core_count = cmd->fast_mem_write.header.chained_core_count;
+    // Target core is used to determine how many SKIP bits comes before data DWORD
+    if (ctx->core_count) {
+        ctx->target_core = cmd->fast_mem_write_at_core.at_cpu_core;
+        core_count = ctx->core_count;
+    } else {
+        ctx->target_core = 0;
+        core_count = 1;
+    }
+
+    // Calculate how many SKIP register bits needs to be considered when calculating bit length
+    skipbits = ctx->core_count ? (ctx->core_count - 1) : 0;
+
+    // Calculate how many DWORDs we can write in one JTAG buffer worth of operations.
+    // With FASTDATA: we switch IR to FASTDATA, and then we no longer need to tinker with IR again.
+    //      Just write everything into DR. So, we first switch to IR right here, and only calculate
+    //      how many DR writes we can fit into one JTAG buffer block:
+    //      TMS: [0100] + [0]         + [(SkipBits+BitWidth-1)x 0]
+    //      TDI: [0000] + [0] (PrAcc) + [SkipBits + 32 bit Data]
+    //      TMS:                                  + [110]
+    //      TDI: + <32 bit Padding (64-bit only)> +  [00]
+    //
+    //          32 Bit CPU: 39 Bits + SkipBits
+    //          64 Bit CPU: 71 Bits + SkipBits
+    //
+    // Without FASTDATA: we have to write DATA once and write CONTROL once to clear PrAcc to finish
+    //      transaction.
+    //      TMS: [01100] + [(IRSeqLen-1)x 0]   + [11100] + [(SkipBits+BitWidth-1)x 0]
+    //      TDI: [00000] + [IRSeq select DATA] +  [0000] + [SkipBits + 32 bit Data]
+    //
+    //      TMS: + [111100] + [(IRSeqLen-1)x 0]      + [11100]
+    //      TDI: +  [00000] + [IRSeq select Control] + [00000]
+    //
+    //      TMS: + [(SkipBits+31)x 0]          + [110]
+    //      TDI: + [SkipBits + 32 bit Control] +  [00]
+    //
+    //          32 Bit CPU: 86 + 2 * (CoreCount * IrLen - 1) + 2 * SkipBits Bits
+    //          64 Bit CPU: 118 + 2 * (CoreCount * IrLen - 1) + 2 * SkipBits Bits
+    if (use_fastdata) {
+        bits_per_xfer = (ctx->is_64bit_cpu ? 71 : 39) + skipbits;
+    } else {
+        if (ctx->is_64bit_cpu) {
+            bits_per_xfer = 118 + 2 * (core_count * ctx->param_ir_len_bits - 1 + skipbits);
+        } else {
+            bits_per_xfer = 86 + 2 * (core_count * ctx->param_ir_len_bits - 1 + skipbits);
+        }
+    }
+
+    // Calculate some metadata, will be useful later
+    ctx->bits_per_xfer = bits_per_xfer;
+    // xfer_per_bufblk must be capped by cmd buffer size
+    ctx->xfers_per_bufblk = MIN(bits_in_tditms_buf / bits_per_xfer,
+                                sizeof(ctx->buffered_cmd) / (ctx->is_64bit_cpu ? 8 : 4));
+    ctx->tdi_bitlen = ctx->xfers_per_bufblk * bits_per_xfer;
+    dwords_per_xfer = BIT2DWORD(bits_per_xfer);
+
+    // We're about to destroy some JTAG buffers, be safe
+    wait_until_jtag_periph_free(ctx);
+
+    // Reconfigure JTAG clock division as specified
+    lsejtag_impl_reconfigure(impl_recfg_clkfreq, cmd->fast_mem_write.jtag_clk_div);
+
+    // Select FASTDATA right now if needed.
+    if (use_fastdata) {    
+        // TMS: [01100] + [(IRSeqLen-1)x 0]       + [110]
+        // TDI: [00000] + [IRSeq select FASTDATA] + [000]
+        // Bit length: 5 + (CoreCount * IrLen - 1) + 3
+        const uint32_t bitlen_select_fastdata = 7 + core_count * ctx->param_ir_len_bits;
+        const uint32_t dwordlen_select_fastdata = BIT2DWORD(bitlen_select_fastdata);
+
+        memset(tms_data, 0, dwordlen_select_fastdata * 4);
+        memset(tdi_data, 0, dwordlen_select_fastdata * 4);
+
+        // 01100 (Shift-IR)
+        bitshift += append_bits(tms_data, bitshift, 0x6, 5);
+
+        // TDI Sequence selecting FASTDATA
+        if (ctx->core_count) {
+            // Fill non-target cores' TAP IRs with SKIP, and fill target core's TAP IR with FASTDATA
+            for (uint32_t core = 0; core < ctx->core_count; ++core) {
+                append_bits(tdi_data,
+                            bitshift,
+                            core == ctx->target_core ? ctx->param_ir_fastdata : ctx->param_ir_skip,
+                            ctx->param_ir_len_bits);
+                bitshift += ctx->param_ir_len_bits;
+            }
+        } else {
+            // Fill the TAP IR with FASTDATA
+            bitshift += 
+                append_bits(tdi_data, bitshift, ctx->param_ir_fastdata, ctx->param_ir_len_bits);
+        }
+
+        // DRSeqBitLen-1
+        --bitshift;
+
+        // 110 (Idle state)
+        bitshift += append_bits(tms_data, bitshift, 0x3, 3);
+
+        ctx->active_bufblk = bufblk;
+
+        // Execute JTAG sequence
+        lsejtag_impl_run_jtag(tdi_data, tms_data, NULL, bitshift, 0, 0);
+        wait_until_jtag_periph_free(ctx);
+    }
+
+    // Prepare the TMS and TDI sequence
+    // We fill one instance, then we copy them to other instances
+    memset(tms_data, 0, dwords_per_xfer);
+    memset(tdi_data, 0, dwords_per_xfer);
+    bitshift = 0;
+    if (use_fastdata) {
+        // 0100 (Shift-DR)
+        bitshift += append_bits(tms_data, bitshift, 0x2, 4);
+
+        // Shift in (BitWidth+1) bits of data (including PrAcc) and SKIP bits
+        bitshift += (ctx->is_64bit_cpu ? 64 : 32) + skipbits;
+
+        // 110 (Idle state)
+        bitshift += append_bits(tms_data, bitshift, 0x3, 3);
+    } else {
+        // 01100 (Shift-IR)
+        bitshift += append_bits(tms_data, bitshift, 0x6, 5);
+
+        // IR sequence selecting DATA
+        if (ctx->core_count) {
+            for (uint32_t core = 0; core < ctx->core_count; ++core) {
+                append_bits(tdi_data,
+                            bitshift,
+                            (core == ctx->target_core) ? ctx->param_ir_data : ctx->param_ir_skip,
+                            ctx->param_ir_len_bits);
+                bitshift += ctx->param_ir_len_bits;
+            }
+        } else {
+            bitshift += append_bits(tdi_data, bitshift, ctx->param_ir_data, ctx->param_ir_len_bits);
+        }
+        --bitshift;
+
+        // 11100 (Shift-DR)
+        bitshift += append_bits(tms_data, bitshift, 0x7, 5);
+
+        // Data to be written
+        bitshift += (ctx->is_64bit_cpu ? 63 : 31) + skipbits;
+
+        // 111100 (Shift-IR)
+        bitshift += append_bits(tms_data, bitshift, 0xf, 6);
+
+        // IR sequence selecting CONTROL
+        if (ctx->core_count) {
+            for (uint32_t core = 0; core < ctx->core_count; ++core) {
+                append_bits(tdi_data,
+                            bitshift,
+                            (core == ctx->target_core) ? ctx->param_ir_control : ctx->param_ir_skip,
+                            ctx->param_ir_len_bits);
+                bitshift += ctx->param_ir_len_bits;
+            }
+        } else {
+            bitshift += append_bits(tdi_data, bitshift, ctx->param_ir_control,
+                                    ctx->param_ir_len_bits);
+        }
+        --bitshift;
+
+        // 11100 (Shift-DR)
+        bitshift += append_bits(tms_data, bitshift, 0x7, 5);
+
+        // Control to be written
+        bitshift += skipbits;
+        bitshift += append_dword(tdi_data, bitshift, 0xc000);
+        --bitshift;
+
+        // 110 (Idle)
+        bitshift += append_bits(tms_data, bitshift, 0x3, 3);
+    }
+    assert(bitshift == bits_per_xfer);
+
+    // Copy to other instances
+    void dump_binary_to_console(const uint8_t * const data, uint32_t length);
+    for (uint32_t i = 1; i < ctx->xfers_per_bufblk; ++i) {
+        uint32_t j;
+        for (j = 0; j < (bits_per_xfer / 32); ++j) {
+            append_dword(tdi_data, bitshift, tdi_data[j]);
+            bitshift += append_dword(tms_data, bitshift, tms_data[j]);
+            
+        }
+        if (bits_per_xfer % 32) {
+            append_bits(tdi_data, bitshift, tdi_data[j], bits_per_xfer % 32);
+            bitshift += append_bits(tms_data, bitshift, tms_data[j], bits_per_xfer % 32);
+        }
+    }
+
+    // Copy to another JTAG buffer
+    memcpy(ctx->jtagbuf_b.tms_data, tms_data, BIT2DWORD(ctx->tdi_bitlen) * 4);
+    memcpy(ctx->jtagbuf_b.tdi_data, tdi_data, BIT2DWORD(ctx->tdi_bitlen) * 4);
+
+    // Clear command buffer. It'll become TX data buffer later
+    ctx->buffered_length = 0;
+
+    // Set total data amount
+    ctx->xfers_left = cmd->fast_mem_write.data_len_dword_count;
+
+    // Set continuation context valid flag
+    ctx->continuation = true;
+
+    printf("FASTWRITE first stage parsing complete\n");
+    printf("    xfers_left: %d\n", ctx->xfers_left);
+    printf("    bits_per_xfer: %d\n", ctx->bits_per_xfer);
+    printf("    xfers_per_bufblk: %d\n", ctx->xfers_per_bufblk);
+    printf("    tdi_bitlen: %d\n", ctx->tdi_bitlen);
+
+    // Let the continuation worker do the job
+    return cer_continue;
+}
+
+lsejtag_cmd_exec_result cmdimpl_fast_mem_read(lsejtag_ctx *ctx, bool use_fastdata) {
+    // FIXME: NOT IMPLEMENTED
+    return cer_success;
+}
+
+lsejtag_cmd_exec_result cmdimpl_continue_fast_mem_write(lsejtag_ctx *ctx) {
+    struct lsejtag_jtagbuf_blk *bufblk;
+    uint32_t *tmsbuf, *tdibuf, *databuf = (uint32_t *)ctx->buffered_cmd;
+    const uint32_t skipbits = ctx->core_count ? (ctx->core_count - 1) : 0;
+    const uint32_t core_count = (ctx->core_count == 0) ? 1 : ctx->core_count;
+    const uint32_t regsize = ctx->is_64bit_cpu ? 8 : 4;
+
+    printf("Continuation FASTWRITE:\n");
+    printf("    xfers_left: %d\n", ctx->xfers_left);
+    printf("    xfers_per_bufblk: %d\n", ctx->xfers_per_bufblk);
+    printf("    buffered_length: %d\n", ctx->buffered_length);  
+
+    // If we have less DWORDs awaiting transmission than the premade TDI/TMS sequence, we should
+    // truncate the JTAG sequence, change the xfers_per_bufblk, tdi_bitlen records
+    if (ctx->xfers_per_bufblk > ctx->xfers_left) {
+        ctx->xfers_per_bufblk = ctx->xfers_left;
+        
+        // Truncate JTAG bit sequence
+        ctx->tdi_bitlen = ctx->bits_per_xfer * ctx->xfers_per_bufblk;
+        printf(" -- Truncated, new tdi_bitlen: %d\n", ctx->tdi_bitlen);
+    }
+
+    // Ensure we have enough data buffered
+    if (ctx->buffered_length < ctx->xfers_per_bufblk * regsize) {
+        uint32_t avail_len = lsejtag_impl_usbrx_len();
+        // printf(" -- avail_len: %d\n", avail_len);
+
+        // Get exactly how many DWORDs we're about to transmit
+        if (ctx->buffered_length + avail_len >= ctx->xfers_per_bufblk * regsize) {
+            // Enough data in USB FIFO
+            const uint32_t read_len = ctx->xfers_per_bufblk * regsize - ctx->buffered_length;
+            printf(" -- Enough; reading %d bytes; ", read_len);
+            lsejtag_impl_usbrx_consume(ctx->buffered_cmd + ctx->buffered_length, read_len);
+            ctx->buffered_length += read_len;
+            printf("buffered %d bytes now\n", read_len);
+        } else {
+            // Not enough
+            printf(" -- Not enough; reading %d bytes; ", avail_len);
+            lsejtag_impl_usbrx_consume(ctx->buffered_cmd + ctx->buffered_length, avail_len);
+            ctx->buffered_length += avail_len;
+            printf("buffered %d bytes now\n", ctx->buffered_length);
+            return cer_continue;
+        }
+    }
+
+    // Choose a free JTAG buffer
+    if (!ctx->jtagbuf_a.busy) {
+        bufblk = &ctx->jtagbuf_a;
+    } else if (!ctx->jtagbuf_b.busy) {
+        bufblk = &ctx->jtagbuf_b;
+    } else {
+        return cer_await_jtag_buf;
+    }
+    tmsbuf = (uint32_t *)&bufblk->tms_data;
+    tdibuf = (uint32_t *)&bufblk->tdi_data;
+
+    // Place data at adequate locations in TDI buffer
+    if (ctx->use_fastdata) {
+        for (uint32_t i = 0; i < ctx->xfers_per_bufblk; ++i) {
+            // [0000] + [0 (PrAcc)] + [SKIPs] + [DATA]
+            if (ctx->is_64bit_cpu) {
+                replace_dword(tdibuf, ctx->bits_per_xfer * i + 5 + ctx->target_core,
+                              databuf[i * 2]);
+                replace_dword(tdibuf, ctx->bits_per_xfer * i + 5 + ctx->target_core + 32,
+                              databuf[i * 2 + 1]);
+            } else {
+                replace_dword(tdibuf, ctx->bits_per_xfer * i + 5 + ctx->target_core, databuf[i]);
+            }
+        }
+    } else {
+        const uint32_t irseq_len = core_count * ctx->param_ir_len_bits;
+        for (uint32_t i = 0; i < ctx->xfers_per_bufblk; ++i) {
+            // [00000] + [IRSeq] + [0000] + [SKIPs] + [DATA]
+            if (ctx->is_64bit_cpu) {
+                replace_dword(tdibuf,
+                              ctx->bits_per_xfer * i + 9 + irseq_len + ctx->target_core,
+                              databuf[i * 2]);
+                replace_dword(tdibuf,
+                              ctx->bits_per_xfer * i + 9 + irseq_len + ctx->target_core + 32,
+                              databuf[i * 2 + 1]);
+            } else {
+                replace_dword(tdibuf, ctx->bits_per_xfer * i + 9 + irseq_len + ctx->target_core,
+                              databuf[i]);
+            }
+        }
+    }
+
+    // Fill in transfer metadata
+    bufblk->tdi_bits = ctx->tdi_bitlen;
+    bufblk->tdo_bits = 0;
+    void dump_binary_to_console(const uint8_t * const data, uint32_t length);
+    // dump_binary_to_console((uint8_t *)tdibuf, (ctx->tdi_bitlen + 7) / 8);
+    // dump_binary_to_console((uint8_t *)tmsbuf, (ctx->tdi_bitlen + 7) / 8);
+
+    // Mark buffer as ready
+    bufblk->prepared = true;
+
+    // Clear command buffer
+    ctx->buffered_length = 0;
+
+    // Check if we reached end of command, if so, set buffer state to clean and return success
+    ctx->xfers_left -= ctx->xfers_per_bufblk;
+    if (ctx->xfers_left == 0) {
+        cmd_buf_clean(ctx);
+
+        // Invalidate continuation context
+        ctx->continuation = false;
+
+        return cer_success;
+    }
+
+    return cer_continue;
 }

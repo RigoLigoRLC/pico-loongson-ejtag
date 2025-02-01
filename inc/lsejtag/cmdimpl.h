@@ -11,3 +11,6 @@ DEF_COMMAND(probe_mem_rw);
 DEF_COMMAND(io_manip);
 DEF_COMMAND(get_firmware_date);
 DEF_COMMAND_ARG(irdr_write, bool isir);
+DEF_COMMAND_ARG(fast_mem_write, bool use_fastdata);
+DEF_COMMAND_ARG(fast_mem_read, bool use_fastdata);
+DEF_COMMAND(continue_fast_mem_write);
