@@ -147,10 +147,6 @@ void lsejtag_impl_run_jtag(const uint32_t *tdi_buf, const uint32_t *tms_buf, uin
     // Write PIO control fields
     // Because of how PIO program is implemented, the counter values are always minus 1 when written
     // to PIO
-    printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-           pio_sm_get_pc(pio0, SM_TDI),
-           pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-           (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
     if (tdo_bits) {
         *ejtag_ctx.tdo_write_addr = (tdo_skip_bits * 4 - 1);
         *ejtag_ctx.tdo_write_addr = BIT2DWORD(tdo_bits) * 32 - 1;
@@ -158,18 +154,12 @@ void lsejtag_impl_run_jtag(const uint32_t *tdi_buf, const uint32_t *tms_buf, uin
     ejtag_ctx.tdo_recv_dword_count = BIT2DWORD(tdo_bits);
     *ejtag_ctx.tdi_write_addr = tdi_bits - 1;
     *ejtag_ctx.tms_write_addr = tdi_bits - 1;
-    printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-           pio_sm_get_pc(pio0, SM_TDI),
-           pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-           (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
 
     // Setup DMA
     dma_hw->ch[ejtag_ctx.tdi_chan].read_addr = (uint32_t)tdi_buf;
     dma_hw->ch[ejtag_ctx.tdi_chan].transfer_count = BIT2DWORD(tdi_bits);
     dma_hw->ch[ejtag_ctx.tms_chan].read_addr = (uint32_t)tms_buf;
     dma_hw->ch[ejtag_ctx.tms_chan].transfer_count = BIT2DWORD(tdi_bits);
-    printf("TDI bits = %d, dwords = %d\n", tdi_bits, BIT2DWORD(tdi_bits));
-    dump_binary_to_console((uint8_t*)tdi_buf, BIT2DWORD(tdi_bits) * 4 + 64);
 
     DbgPrint("RunJtag TDI=%d TDO=%d TMS=%d\n", ++tdiCount, ++tdoCount, ++tmsCount);
     DbgPrint("TDI Seq (%08lX):\n", tdi_bits - 1);
@@ -188,21 +178,8 @@ void lsejtag_impl_run_jtag(const uint32_t *tdi_buf, const uint32_t *tms_buf, uin
         pio_enable_sm_mask_in_sync(pio0, SM_MASK_JTAG);
     } else {
         dma_start_channel_mask(ejtag_ctx.dma_start_mask_no_tdo);
-        printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-               pio_sm_get_pc(pio0, SM_TDI),
-               pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-               (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
         pio_enable_sm_mask_in_sync(pio0, SM_MASK_TDI_TMS);
     }
-    printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-            pio_sm_get_pc(pio0, SM_TDI),
-            pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-            (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
-    printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-            pio_sm_get_pc(pio0, SM_TDI),
-            pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-            (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
-
     // Ask LED to be illuminated
     ejtag_ctx.led_turn_on = 1;
 }
@@ -235,9 +212,5 @@ void isr_pio0_irq0() {
     DbgPrint("[% 8d] TDI SM xfer cplt\n", tmsCount);
     lsejtag_jtag_complete_tdi(&lsejtag_lib_ctx);
     lsejtag_jtag_complete_tms(&lsejtag_lib_ctx);
-    printf(" SM1 TDI PC=%02d [FIFO TX=%d STALL=%d]\r\n",
-            pio_sm_get_pc(pio0, SM_TDI),
-            pio_sm_get_tx_fifo_level(pio0, SM_TDI),
-            (pio0->fdebug & (PIO_FDEBUG_TXSTALL_LSB << SM_TDI)) != 0);
     pio_sm_exec(pio0, SM_TDI, pio_encode_irq_clear(false, 0));
 }

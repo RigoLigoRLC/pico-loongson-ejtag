@@ -215,17 +215,18 @@ void init_dma() {
     channel_config_set_read_increment(&cfg, true);
     channel_config_set_write_increment(&cfg, false);
     channel_config_set_dreq(&cfg, DREQ_PIO0_TX0 + SM_TDI);
-    // channel_config_set_irq_quiet(&cfg, true);
     dma_channel_configure(ejtag_ctx.tdi_chan, &cfg, ejtag_ctx.tdi_write_addr, NULL, 0, false);
 
     ejtag_ctx.tms_chan = dma_claim_unused_channel(true);
     channel_config_set_dreq(&cfg, DREQ_PIO0_TX0 + SM_TMS);
+    channel_config_set_chain_to(&cfg, ejtag_ctx.tms_chan);
     dma_channel_configure(ejtag_ctx.tms_chan, &cfg, ejtag_ctx.tms_write_addr, NULL, 0, false);
 
     ejtag_ctx.tdo_chan = dma_claim_unused_channel(true);
     channel_config_set_read_increment(&cfg, false);
     channel_config_set_write_increment(&cfg, true);
     channel_config_set_dreq(&cfg, DREQ_PIO0_RX0 + SM_TDO);
+    channel_config_set_chain_to(&cfg, ejtag_ctx.tdo_chan);
     dma_channel_configure(ejtag_ctx.tdo_chan, &cfg, NULL, ejtag_ctx.tdo_read_addr, 0, false);
 
     ejtag_ctx.dma_start_mask_no_tdo = (1 << ejtag_ctx.tdi_chan) | (1 << ejtag_ctx.tms_chan);
