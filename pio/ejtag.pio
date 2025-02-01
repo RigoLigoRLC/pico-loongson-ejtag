@@ -1,6 +1,6 @@
 
 .program ejtag_tdi
-.origin 0
+.origin 8
 .side_set 1
 .wrap_target
 tdi_sm_begin:
@@ -17,7 +17,7 @@ tdi_sm_loop:
 .wrap                                   // Wrap around and start a new transaction
 
 .program ejtag_tms
-.origin 8
+.origin 16
 .side_set 1
 .wrap_target
     pull block              side 0      // Fetch output bit length, block if no data in FIFO
@@ -32,7 +32,7 @@ tms_sm_loop:
 .wrap                                   // If (X--) is zero, wrap around and start a new transaction
 
 .program ejtag_tdo
-.origin 16
+.origin 24
 .side_set 1
 .wrap_target
     pull block              side 0      // Fetch initial delay cycle count, block if no data in FIFO

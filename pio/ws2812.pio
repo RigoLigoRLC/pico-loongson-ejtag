@@ -7,7 +7,7 @@
 
 .program ws2812
 .side_set 1
-.origin 28
+.origin 0
 
 ; The following constants are selected for broad compatibility with WS2812,
 ; WS2812B, and SK6812 LEDs. Other constants may support higher bandwidths for

@@ -38,9 +38,9 @@
 #define SM_MASK_JTAG                            (SM_MASK_TDI_TMS|(1<<(SM_TDO)))
 
 // PIO program location
-#define SM_PC_TDI                               0
-#define SM_PC_TMS                               8
-#define SM_PC_TDO                               16
-#define SM_PC_WS2812                            28
+#define SM_PC_TDI                               8
+#define SM_PC_TMS                               16
+#define SM_PC_TDO                               24
+#define SM_PC_WS2812                            0
 
 
