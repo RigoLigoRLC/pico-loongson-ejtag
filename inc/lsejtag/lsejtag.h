@@ -160,7 +160,9 @@ typedef struct {
     uint16_t core_count;        // Target core count (decides IR sequence length)
     uint16_t target_core;       // Target core (starting from 0)
     uint32_t bits_per_xfer;     // How many bits of TDI/TMS data is needed for one USize R/W xfer
-    uint32_t xfers_per_bufblk;  // How many USize R/Ws fits into one JTAG buffer block
+    uint32_t xfers_per_bufblk;  // How many USize R/Ws should fit into one JTAG buffer block
+    uint32_t drseq_dwordlen;    // How many DWORDs will be buffered from USB in each transaction
+    uint32_t drseq_bitlen;      // How many valid bits are in FastWrite data in each transaction
     uint32_t tdi_bitlen;// TDI/TMS bit length of the whole premade TDI/TMS sequence
     uint32_t xfers_left;// How many xfers to read/write before command finishes.
                         // For fast_writes: how many xfers of payload need to be received from host

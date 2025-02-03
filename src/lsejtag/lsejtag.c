@@ -276,6 +276,12 @@ uint32_t lsejtag_flush_tdo(lsejtag_ctx *ctx) {
 void lsejtag_run_jtag(lsejtag_ctx *ctx) {
     struct lsejtag_jtagbuf_blk *bufblk;
 
+    // Deny the RunJtag request if JTAG peripheral is still working
+    if (ctx->tdo_busy || ctx->jtagbuf_a.tdi_busy || ctx->jtagbuf_a.tms_busy ||
+        ctx->jtagbuf_b.tdi_busy || ctx->jtagbuf_b.tms_busy) {
+        return;
+    }
+
     if (ctx->jtagbuf_a.prepared) {
         bufblk = &ctx->jtagbuf_a;
     } else if (ctx->jtagbuf_b.prepared) {

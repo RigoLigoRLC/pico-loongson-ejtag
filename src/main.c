@@ -80,7 +80,9 @@ static inline uint32_t ws2812_rgb_u32(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void isr_hardfault() {
-
+    *ejtag_ctx.ws2812_write_addr = 0x10201000;
+    stdio_puts_raw("!! HardFault !!\r\n");
+    while (1);
 }
 
 //==============================================================================
@@ -294,5 +296,3 @@ void init_print_clock() {
     printf("clk_usb  = %dkHz\n", f_clk_usb);
     printf("clk_adc  = %dkHz\n", f_clk_adc);
 }
-
-

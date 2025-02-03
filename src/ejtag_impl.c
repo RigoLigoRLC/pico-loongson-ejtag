@@ -59,7 +59,7 @@ uint32_t lsejtag_impl_usbtx_free_len() {
 void lsejtag_impl_usbrx_consume(uint8_t *dest, uint32_t len) {
     tud_vendor_n_read(ITF_NUM_EJTAG, dest, len);
     // tud_cdc_write_str(" - EJTAG RX:\r\n");
-    dump_binary_to_console(dest, len);
+    // dump_binary_to_console(dest, len);
     // tud_cdc_write_flush();
 }
 
@@ -138,6 +138,14 @@ void lsejtag_impl_reconfigure(lsejtag_impl_recfg type, uint32_t param) {
 
 // For debug purposes
 static int tdiCount = 0, tdoCount = 0, tmsCount = 0;
+static inline char BufId() {
+    if (lsejtag_lib_ctx.active_bufblk == &lsejtag_lib_ctx.jtagbuf_a) {
+        return 'A';
+    } else if (lsejtag_lib_ctx.active_bufblk == &lsejtag_lib_ctx.jtagbuf_b) {
+        return 'B';
+    }
+    return '?';
+}
 
 void lsejtag_impl_run_jtag(const uint32_t *tdi_buf, const uint32_t *tms_buf, uint32_t *tdo_buf,
                            uint32_t tdi_bits, uint32_t tdo_bits, uint32_t tdo_skip_bits) {
@@ -161,7 +169,7 @@ void lsejtag_impl_run_jtag(const uint32_t *tdi_buf, const uint32_t *tms_buf, uin
     dma_hw->ch[ejtag_ctx.tms_chan].read_addr = (uint32_t)tms_buf;
     dma_hw->ch[ejtag_ctx.tms_chan].transfer_count = BIT2DWORD(tdi_bits);
 
-    DbgPrint("RunJtag TDI=%d TDO=%d TMS=%d\n", ++tdiCount, ++tdoCount, ++tmsCount);
+    DbgPrint("RunJtag Buf%c TDI=%d TDO=%d TMS=%d\n", BufId(), ++tdiCount, ++tdoCount, ++tmsCount);
     DbgPrint("TDI Seq (%08lX):\n", tdi_bits - 1);
     // dump_binary_to_console((uint8_t *)tdi_buf, BIT2DWORD(tdi_bits) * 4);
     DbgPrint("TMS Seq (%08lX):\n", tdi_bits - 1);
@@ -209,7 +217,7 @@ void isr_dma_irq1() {
 void isr_pio0_irq0() {
     // since TDI and TMS are in sync and both transfer same amount of data, we can safely assume
     // their transfer has both completed
-    DbgPrint("[% 8d] TDI SM xfer cplt\n", tmsCount);
+    DbgPrint("[% 8d] Buf%c TDI SM xfer cplt\n", tmsCount, BufId());
     lsejtag_jtag_complete_tdi(&lsejtag_lib_ctx);
     lsejtag_jtag_complete_tms(&lsejtag_lib_ctx);
     pio_sm_exec(pio0, SM_TDI, pio_encode_irq_clear(false, 0));
